@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -6,11 +6,12 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Modal,
+  Animated,
+  TouchableWithoutFeedback,
   TextInput,
   ScrollView,
   RefreshControl,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from "react-native";
 import { useFocusEffect, router } from "expo-router";
@@ -43,10 +44,25 @@ export default function ManageSubjects() {
   const [refreshing, setRefreshing] = useState(false);
 
   // Add-sheet state
-  const [showAdd, setShowAdd] = useState(false);
+  const [addMounted, setAddMounted] = useState(false);
   const [name, setName]       = useState("");
   const [typeKey, setTypeKey] = useState("theory");
   const [saving, setSaving]   = useState(false);
+  const addBackdropOpacity = useRef(new Animated.Value(0)).current;
+  const addSheetTranslateY = useRef(new Animated.Value(500)).current;
+  const [kbHeight, setKbHeight] = useState(0);
+
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => setKbHeight(e.endCoordinates.height)
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => setKbHeight(0)
+    );
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   const loadSubjects = useCallback(async () => {
     try {
@@ -70,7 +86,18 @@ export default function ManageSubjects() {
   const openAdd = () => {
     setName("");
     setTypeKey("theory");
-    setShowAdd(true);
+    setAddMounted(true);
+    Animated.parallel([
+      Animated.timing(addBackdropOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+      Animated.timing(addSheetTranslateY, { toValue: 0, duration: 220, useNativeDriver: true }),
+    ]).start();
+  };
+
+  const closeAdd = () => {
+    Animated.parallel([
+      Animated.timing(addBackdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+      Animated.timing(addSheetTranslateY, { toValue: 500, duration: 180, useNativeDriver: true }),
+    ]).start(() => setAddMounted(false));
   };
 
   const handleAdd = async () => {
@@ -101,7 +128,7 @@ export default function ManageSubjects() {
       } else {
         await createSubject(db, trimmed, typeKey);
       }
-      setShowAdd(false);
+      closeAdd();
       await loadSubjects();
     } catch {
       showAlert("Error", "Failed to create subject.");
@@ -233,30 +260,25 @@ export default function ManageSubjects() {
       )}
 
       {/* ── Add Subject bottom sheet ────────────────────────────────────── */}
-      <Modal
-        visible={showAdd}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowAdd(false)}
-      >
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-        >
-          {/* Dim backdrop – tap to close */}
-          <TouchableOpacity
-            style={styles.backdrop}
-            activeOpacity={1}
-            onPress={() => setShowAdd(false)}
-          />
+      {addMounted && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          <TouchableWithoutFeedback onPress={closeAdd}>
+            <Animated.View style={[styles.backdrop, { opacity: addBackdropOpacity }]} />
+          </TouchableWithoutFeedback>
 
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
+          <Animated.View
+            style={[styles.sheet, {
+              paddingBottom: insets.bottom + 20,
+              bottom: kbHeight,
+              transform: [{ translateY: addSheetTranslateY }],
+            }]}
+          >
             <View style={styles.sheetHandle} />
 
             {/* Sheet header */}
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>New Subject</Text>
-              <TouchableOpacity onPress={() => setShowAdd(false)}>
+              <TouchableOpacity onPress={closeAdd}>
                 <Text style={styles.sheetClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -323,9 +345,9 @@ export default function ManageSubjects() {
                 )}
               </TouchableOpacity>
             </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          </Animated.View>
+        </View>
+      )}
     </View>
   );
 }
@@ -419,10 +441,14 @@ const styles = StyleSheet.create({
 
   // Modal
   backdrop: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.42)",
   },
   sheet: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: "#fff",
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,

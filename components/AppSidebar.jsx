@@ -1,8 +1,7 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  Modal,
   TouchableOpacity,
   Animated,
   StyleSheet,
@@ -11,134 +10,163 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
-const SIDEBAR_WIDTH = 270;
+const SIDEBAR_WIDTH = 280;
 
 export default function AppSidebar({ visible, onClose }) {
   const insets = useSafeAreaInsets();
   const translateX = useRef(new Animated.Value(-SIDEBAR_WIDTH)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    Animated.timing(translateX, {
-      toValue: visible ? 0 : -SIDEBAR_WIDTH,
-      duration: visible ? 220 : 180,
-      useNativeDriver: true,
-    }).start();
-  }, [visible, translateX]);
+    if (visible) {
+      setMounted(true);
+      Animated.parallel([
+        Animated.timing(translateX, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(translateX, {
+          toValue: -SIDEBAR_WIDTH,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdropOpacity, {
+          toValue: 0,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start(() => setMounted(false));
+    }
+  }, [visible]);
 
   const navigate = (path) => {
     onClose();
     setTimeout(() => router.push(path), 180);
   };
 
+  if (!mounted) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      {/* Backdrop — fades in, no slide */}
       <TouchableWithoutFeedback onPress={onClose}>
-        <View style={styles.backdrop} />
+        <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]} />
       </TouchableWithoutFeedback>
 
+      {/* Sidebar panel */}
       <Animated.View
-        style={[styles.sidebar, { transform: [{ translateX }], paddingTop: insets.top }]}
+        style={[styles.sidebar, { paddingTop: insets.top, transform: [{ translateX }] }]}
       >
-        {/* Brand header */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.appName}>ClassTrackr</Text>
-            <Text style={styles.appSub}>Student Attendance</Text>
-          </View>
+        {/* Compact top bar */}
+        <View style={styles.topBar}>
+          <Text style={styles.appName}>ClassTrackr</Text>
           <TouchableOpacity
             onPress={onClose}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Text style={styles.closeBtn}>✕</Text>
+            <Text style={styles.closeIcon}>✕</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.divider} />
 
-        {/* Nav items */}
         <TouchableOpacity
-          style={styles.menuItem}
+          style={styles.item}
           onPress={() => navigate('/timetable')}
           activeOpacity={0.7}
         >
           <View style={[styles.iconBox, { backgroundColor: '#E3F2FD' }]}>
-            <Text style={styles.menuIcon}>📅</Text>
+            <Text style={styles.icon}>📅</Text>
           </View>
-          <View style={styles.menuText}>
-            <Text style={styles.menuLabel}>Timetable</Text>
-            <Text style={styles.menuSub}>Set subjects per day</Text>
+          <View style={styles.itemText}>
+            <Text style={styles.itemLabel}>Timetable</Text>
+            <Text style={styles.itemSub}>Set subjects per day</Text>
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.menuItem}
+          style={styles.item}
           onPress={() => navigate('/manage-subjects')}
           activeOpacity={0.7}
         >
           <View style={[styles.iconBox, { backgroundColor: '#F3E5F5' }]}>
-            <Text style={styles.menuIcon}>📚</Text>
+            <Text style={styles.icon}>📚</Text>
           </View>
-          <View style={styles.menuText}>
-            <Text style={styles.menuLabel}>Manage Subjects</Text>
-            <Text style={styles.menuSub}>All subjects & attendance</Text>
+          <View style={styles.itemText}>
+            <Text style={styles.itemLabel}>Manage Subjects</Text>
+            <Text style={styles.itemSub}>All subjects & attendance</Text>
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.menuItem}
+          style={styles.item}
           onPress={() => navigate('/pause')}
           activeOpacity={0.7}
         >
           <View style={[styles.iconBox, { backgroundColor: '#FFF3E0' }]}>
-            <Text style={styles.menuIcon}>⏸️</Text>
+            <Text style={styles.icon}>⏸️</Text>
           </View>
-          <View style={styles.menuText}>
-            <Text style={styles.menuLabel}>Pause Timetable</Text>
-            <Text style={styles.menuSub}>Skip classes for a period</Text>
+          <View style={styles.itemText}>
+            <Text style={styles.itemLabel}>Pause Timetable</Text>
+            <Text style={styles.itemSub}>Skip classes for a period</Text>
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
       </Animated.View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   backdrop: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.42)',
   },
   sidebar: {
     position: 'absolute',
-    top: 0, left: 0, bottom: 0,
+    top: 0,
+    left: 0,
+    bottom: 0,
     width: SIDEBAR_WIDTH,
     backgroundColor: '#fff',
-    elevation: 10,
+    elevation: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 5, height: 0 },
-    shadowOpacity: 0.18,
-    shadowRadius: 14,
+    shadowOffset: { width: 6, height: 0 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
   },
-  header: {
+  topBar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 20,
-    backgroundColor: '#2196F3',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
-  appName: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
-  appSub: { fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
-  closeBtn: { fontSize: 18, color: 'rgba(255,255,255,0.85)' },
-  divider: { height: 1, backgroundColor: '#f0f0f0' },
-  menuItem: {
+  appName: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1a1a1a',
+    letterSpacing: -0.3,
+  },
+  closeIcon: { fontSize: 18, color: '#aaa' },
+  divider: { height: 1, backgroundColor: '#f0f0f0', marginBottom: 6 },
+  item: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 18,
-    paddingVertical: 16,
+    paddingVertical: 14,
     gap: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#f5f5f5',
@@ -150,9 +178,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  menuIcon: { fontSize: 20 },
-  menuText: { flex: 1 },
-  menuLabel: { fontSize: 15, fontWeight: '600', color: '#222' },
-  menuSub: { fontSize: 12, color: '#999', marginTop: 2 },
-  chevron: { fontSize: 20, color: '#ccc', fontWeight: '300' },
+  icon: { fontSize: 20 },
+  itemText: { flex: 1 },
+  itemLabel: { fontSize: 15, fontWeight: '600', color: '#222' },
+  itemSub: { fontSize: 12, color: '#999', marginTop: 2 },
+  chevron: { fontSize: 22, color: '#ddd', fontWeight: '300' },
 });

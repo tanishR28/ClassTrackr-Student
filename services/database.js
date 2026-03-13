@@ -1,3 +1,20 @@
+// ── Private helpers ──────────────────────────────────────────────────────────
+
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function getDayShort(dateStr) {
+  // Use T12:00:00 to avoid UTC-vs-local midnight ambiguity
+  return DAY_SHORT[new Date(dateStr + 'T12:00:00').getDay()];
+}
+
+function shiftDate(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// ── Schema ────────────────────────────────────────────────────────────────────
+
 export async function initDatabase(db) {
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -49,6 +66,11 @@ export async function initDatabase(db) {
       start_date TEXT NOT NULL,
       end_date   TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT NOT NULL PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // Migration: add threshold column for existing installs that lack it
@@ -59,6 +81,14 @@ export async function initDatabase(db) {
   } catch {
     // Column already exists — safe to ignore
   }
+
+  // Seed last_processed_date on first run (existing installs start from yesterday
+  // so already-processed history isn't re-applied)
+  const yesterday = shiftDate(new Date().toISOString().slice(0, 10), -1);
+  await db.runAsync(
+    `INSERT OR IGNORE INTO app_settings (key, value) VALUES ('last_processed_date', ?)`,
+    [yesterday]
+  );
 }
 
 // ── Subjects ────────────────────────────────────────────────────────────────
@@ -179,104 +209,138 @@ export async function initTodayMarks(db, day, dateStr) {
 }
 
 /**
- * Apply all unprocessed marks from days before todayDate to attendance counters.
- * - present → total+1, present+1
- * - absent  → total+1
- * - skip    → no change
+ * Core attendance processor.
+ *
+ * Iterates every calendar date from (last_processed_date + 1) up to (todayDate - 1).
+ * For each date it looks up the weekly timetable for that day-of-week and applies:
+ *   - explicit daily_marks status if the user marked the subject
+ *   - defaults to 'present' if the app was never opened that day
+ *
+ * This guarantees that not opening the app == counted as present.
  */
 export async function processPendingMarks(db, todayDate) {
-  // Mark all daily_marks within a pause range as processed WITHOUT applying attendance
-  await db.runAsync(
-    `UPDATE daily_marks SET processed = 1
-     WHERE processed = 0 AND date < ?
-       AND EXISTS (
-         SELECT 1 FROM timetable_pause
-         WHERE daily_marks.date >= start_date AND daily_marks.date <= end_date
-       )`,
-    [todayDate]
+  // Read (or initialise) the pointer tracking how far we've processed
+  const setting = await db.getFirstAsync(
+    `SELECT value FROM app_settings WHERE key = 'last_processed_date'`
   );
-  await db.runAsync(
-    `UPDATE extra_lectures SET processed = 1
-     WHERE processed = 0 AND date < ?
-       AND EXISTS (
-         SELECT 1 FROM timetable_pause
-         WHERE extra_lectures.date >= start_date AND extra_lectures.date <= end_date
-       )`,
-    [todayDate]
+  if (!setting) return; // initDatabase hasn't run yet — shouldn't happen
+
+  const lastProcessed = setting.value;
+
+  // Build the list of dates that still need processing
+  const dates = [];
+  let cur = shiftDate(lastProcessed, 1);
+  while (cur < todayDate) {
+    dates.push(cur);
+    cur = shiftDate(cur, 1);
+  }
+  if (dates.length === 0) return;
+
+  // Active pause range (one row max)
+  const pause = await db.getFirstAsync(
+    `SELECT start_date, end_date FROM timetable_pause LIMIT 1`
   );
 
-  // Process remaining (non-paused) daily_marks
-  const marks = await db.getAllAsync(
-    `SELECT dm.subject_id, dm.status,
-            COALESCE(a.total,   0) AS total,
-            COALESCE(a.present, 0) AS present,
-            COALESCE(a.threshold, 75) AS threshold
-     FROM daily_marks dm
-     LEFT JOIN attendance a ON a.subject_id = dm.subject_id
-     WHERE dm.processed = 0 AND dm.date < ?`,
-    [todayDate]
-  );
-
-  for (const m of marks) {
-    if (m.status === 'skip') continue;
-    if (m.status === 'present') {
+  for (const dateStr of dates) {
+    // Paused day → skip entirely, no attendance recorded
+    if (pause && dateStr >= pause.start_date && dateStr <= pause.end_date) {
       await db.runAsync(
-        `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
-         ON CONFLICT(subject_id) DO UPDATE SET
-           total   = excluded.total,
-           present = excluded.present`,
-        [m.subject_id, m.total + 1, m.present + 1, m.threshold]
+        `UPDATE daily_marks  SET processed = 1 WHERE date = ? AND processed = 0`, [dateStr]
       );
-    } else if (m.status === 'absent') {
       await db.runAsync(
-        `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
-         ON CONFLICT(subject_id) DO UPDATE SET
-           total = excluded.total`,
-        [m.subject_id, m.total + 1, m.present, m.threshold]
+        `UPDATE extra_lectures SET processed = 1 WHERE date = ? AND processed = 0`, [dateStr]
       );
+      continue;
     }
+
+    const dayShort = getDayShort(dateStr);
+
+    // ── Timetable subjects for this day ──────────────────────────────────────
+    const scheduled = await db.getAllAsync(
+      `SELECT subject_id FROM timetable WHERE day = ?`,
+      [dayShort]
+    );
+
+    for (const { subject_id } of scheduled) {
+      // Explicit user mark, or 'present' if they never opened the app
+      const markRow = await db.getFirstAsync(
+        `SELECT status FROM daily_marks WHERE date = ? AND subject_id = ?`,
+        [dateStr, subject_id]
+      );
+      const status = markRow?.status ?? 'present';
+      if (status === 'skip') continue;
+
+      // Read attendance fresh each time to avoid staleness when processing
+      // multiple days in one run for the same subject
+      const att = await db.getFirstAsync(
+        `SELECT total, present, threshold FROM attendance WHERE subject_id = ?`,
+        [subject_id]
+      ) ?? { total: 0, present: 0, threshold: 75 };
+
+      if (status === 'present') {
+        await db.runAsync(
+          `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
+           ON CONFLICT(subject_id) DO UPDATE SET
+             total   = excluded.total,
+             present = excluded.present`,
+          [subject_id, att.total + 1, att.present + 1, att.threshold]
+        );
+      } else {
+        // absent
+        await db.runAsync(
+          `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
+           ON CONFLICT(subject_id) DO UPDATE SET
+             total = excluded.total`,
+          [subject_id, att.total + 1, att.present, att.threshold]
+        );
+      }
+    }
+
+    // ── Extra lectures for this date ─────────────────────────────────────────
+    const extras = await db.getAllAsync(
+      `SELECT subject_id, status FROM extra_lectures WHERE date = ? AND processed = 0`,
+      [dateStr]
+    );
+
+    for (const { subject_id, status } of extras) {
+      if (status === 'skip') continue;
+
+      const att = await db.getFirstAsync(
+        `SELECT total, present, threshold FROM attendance WHERE subject_id = ?`,
+        [subject_id]
+      ) ?? { total: 0, present: 0, threshold: 75 };
+
+      if (status === 'present') {
+        await db.runAsync(
+          `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
+           ON CONFLICT(subject_id) DO UPDATE SET
+             total   = excluded.total,
+             present = excluded.present`,
+          [subject_id, att.total + 1, att.present + 1, att.threshold]
+        );
+      } else {
+        await db.runAsync(
+          `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
+           ON CONFLICT(subject_id) DO UPDATE SET
+             total = excluded.total`,
+          [subject_id, att.total + 1, att.present, att.threshold]
+        );
+      }
+    }
+
+    // Mark daily_marks + extra_lectures as processed for this date
+    await db.runAsync(
+      `UPDATE daily_marks    SET processed = 1 WHERE date = ? AND processed = 0`, [dateStr]
+    );
+    await db.runAsync(
+      `UPDATE extra_lectures SET processed = 1 WHERE date = ? AND processed = 0`, [dateStr]
+    );
   }
 
+  // Advance the pointer to the last date we just processed
   await db.runAsync(
-    `UPDATE daily_marks SET processed = 1 WHERE processed = 0 AND date < ?`,
-    [todayDate]
-  );
-
-  // Process extra lectures (always treated the same way as daily_marks)
-  const extras = await db.getAllAsync(
-    `SELECT el.subject_id, el.status,
-            COALESCE(a.total,   0) AS total,
-            COALESCE(a.present, 0) AS present,
-            COALESCE(a.threshold, 75) AS threshold
-     FROM extra_lectures el
-     LEFT JOIN attendance a ON a.subject_id = el.subject_id
-     WHERE el.processed = 0 AND el.date < ?`,
-    [todayDate]
-  );
-
-  for (const e of extras) {
-    if (e.status === 'skip') continue;
-    if (e.status === 'present') {
-      await db.runAsync(
-        `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
-         ON CONFLICT(subject_id) DO UPDATE SET
-           total   = excluded.total,
-           present = excluded.present`,
-        [e.subject_id, e.total + 1, e.present + 1, e.threshold]
-      );
-    } else if (e.status === 'absent') {
-      await db.runAsync(
-        `INSERT INTO attendance (subject_id, total, present, threshold) VALUES (?, ?, ?, ?)
-         ON CONFLICT(subject_id) DO UPDATE SET
-           total = excluded.total`,
-        [e.subject_id, e.total + 1, e.present, e.threshold]
-      );
-    }
-  }
-
-  await db.runAsync(
-    `UPDATE extra_lectures SET processed = 1 WHERE processed = 0 AND date < ?`,
-    [todayDate]
+    `UPDATE app_settings SET value = ? WHERE key = 'last_processed_date'`,
+    [dates[dates.length - 1]]
   );
 }
 

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -6,7 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Modal,
+  Animated,
+  TouchableWithoutFeedback,
 } from "react-native";
 import { router } from "expo-router";
 import { useSQLiteContext } from "expo-sqlite";
@@ -29,9 +30,11 @@ export default function Timetable() {
   );
   const [daySubjects, setDaySubjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showPicker, setShowPicker] = useState(false);
+  const [pickerMounted, setPickerMounted] = useState(false);
   const [available, setAvailable] = useState([]);
   const [pickerLoading, setPickerLoading] = useState(false);
+  const pickerBackdropOpacity = useRef(new Animated.Value(0)).current;
+  const pickerSheetTranslateY = useRef(new Animated.Value(400)).current;
 
   const loadDay = useCallback(async () => {
     setLoading(true);
@@ -73,7 +76,11 @@ export default function Timetable() {
 
   const openPicker = async () => {
     setPickerLoading(true);
-    setShowPicker(true);
+    setPickerMounted(true);
+    Animated.parallel([
+      Animated.timing(pickerBackdropOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+      Animated.timing(pickerSheetTranslateY, { toValue: 0, duration: 220, useNativeDriver: true }),
+    ]).start();
     try {
       const data = await getSubjectsNotInDay(db, selectedDay);
       setAvailable(data);
@@ -82,6 +89,13 @@ export default function Timetable() {
     } finally {
       setPickerLoading(false);
     }
+  };
+
+  const closePicker = () => {
+    Animated.parallel([
+      Animated.timing(pickerBackdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+      Animated.timing(pickerSheetTranslateY, { toValue: 400, duration: 180, useNativeDriver: true }),
+    ]).start(() => setPickerMounted(false));
   };
 
   const handleAdd = async (subject) => {
@@ -165,13 +179,18 @@ export default function Timetable() {
         <Text style={styles.addFabText}>+ Add Subject</Text>
       </TouchableOpacity>
 
-      {/* Picker modal */}
-      <Modal visible={showPicker} transparent animationType="slide" onRequestClose={() => setShowPicker(false)}>
-        <View style={styles.pickerOverlay}>
-          <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16 }]}>
+      {/* Picker — animated overlay, no Modal */}
+      {pickerMounted && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          <TouchableWithoutFeedback onPress={closePicker}>
+            <Animated.View style={[styles.pickerOverlay, { opacity: pickerBackdropOpacity }]} />
+          </TouchableWithoutFeedback>
+          <Animated.View
+            style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, transform: [{ translateY: pickerSheetTranslateY }] }]}
+          >
             <View style={styles.pickerHeader}>
               <Text style={styles.pickerTitle}>Add to {selectedDay}</Text>
-              <TouchableOpacity onPress={() => setShowPicker(false)}>
+              <TouchableOpacity onPress={closePicker}>
                 <Text style={styles.pickerClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -205,9 +224,9 @@ export default function Timetable() {
                 )}
               />
             )}
-          </View>
+          </Animated.View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -286,11 +305,14 @@ const styles = StyleSheet.create({
   },
   addFabText: { color: "#fff", fontWeight: "700", fontSize: 15 },
   pickerOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
   },
   pickerSheet: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,

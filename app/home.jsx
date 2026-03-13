@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
-  Modal,
+  Animated,
+  TouchableWithoutFeedback,
   ScrollView,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -58,7 +59,7 @@ const STATUS_COLOR = { present: '#4CAF50', absent: '#F44336', skip: '#9E9E9E' };
 export default function Home() {
   const db = useSQLiteContext();
   const insets = useSafeAreaInsets();
-  const today = useMemo(() => getTodayInfo(), []);
+  const [today, setToday] = useState(() => getTodayInfo());
 
   const [subjects, setSubjects] = useState([]);
   const [marks, setMarks] = useState({});
@@ -68,18 +69,22 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Extra lecture picker modal
-  const [extraModal, setExtraModal] = useState(false);
+  const [extraModalMounted, setExtraModalMounted] = useState(false);
   const [allSubjects, setAllSubjects] = useState([]);
+  const extraBackdropOpacity = useRef(new Animated.Value(0)).current;
+  const extraSheetTranslateY = useRef(new Animated.Value(400)).current;
 
   const loadSubjects = useCallback(async () => {
+    const t = getTodayInfo(); // always fresh — correct even if midnight passed
     try {
-      await processPendingMarks(db, today.date);
-      await initTodayMarks(db, today.short, today.date);
+      await processPendingMarks(db, t.date);
+      await initTodayMarks(db, t.short, t.date);
       const [data, marksMap, extras] = await Promise.all([
-        getSubjectsWithStatsForDay(db, today.short),
-        getTodayMarksMap(db, today.date),
-        getExtraLecturesForDate(db, today.date),
+        getSubjectsWithStatsForDay(db, t.short),
+        getTodayMarksMap(db, t.date),
+        getExtraLecturesForDate(db, t.date),
       ]);
+      setToday(t);
       setSubjects(data);
       setMarks(marksMap);
       setExtraLectures(extras);
@@ -89,7 +94,7 @@ export default function Home() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [db, today.date, today.short]);
+  }, [db]);
 
   useFocusEffect(
     useCallback(() => {
@@ -97,6 +102,24 @@ export default function Home() {
       loadSubjects();
     }, [loadSubjects])
   );
+
+  // Fire at midnight so attendance updates the moment the new day starts,
+  // even if the app is left open overnight. Recurses for subsequent nights.
+  useEffect(() => {
+    let timer;
+    function scheduleMidnight() {
+      const now = new Date();
+      const midnight = new Date(now);
+      midnight.setHours(24, 0, 0, 0);
+      timer = setTimeout(() => {
+        setLoading(true);
+        loadSubjects();
+        scheduleMidnight(); // reschedule for the next midnight
+      }, midnight.getTime() - now.getTime());
+    }
+    scheduleMidnight();
+    return () => clearTimeout(timer);
+  }, [loadSubjects]);
 
   // ── Mark all ────────────────────────────────────────────────────────────────
 
@@ -201,16 +224,27 @@ export default function Home() {
     try {
       const all = await getAllSubjects(db);
       setAllSubjects(all);
-      setExtraModal(true);
+      setExtraModalMounted(true);
+      Animated.parallel([
+        Animated.timing(extraBackdropOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+        Animated.timing(extraSheetTranslateY, { toValue: 0, duration: 220, useNativeDriver: true }),
+      ]).start();
     } catch {
       showAlert("Error", "Failed to load subjects.");
     }
   };
 
+  const closeExtraModal = () => {
+    Animated.parallel([
+      Animated.timing(extraBackdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+      Animated.timing(extraSheetTranslateY, { toValue: 400, duration: 180, useNativeDriver: true }),
+    ]).start(() => setExtraModalMounted(false));
+  };
+
   const handleAddExtra = async (subject) => {
     try {
       await addExtraLecture(db, today.date, subject.id);
-      setExtraModal(false);
+      closeExtraModal();
       const extras = await getExtraLecturesForDate(db, today.date);
       setExtraLectures(extras);
     } catch {
@@ -391,7 +425,7 @@ export default function Home() {
       <StatusBar style="light" backgroundColor="#2196F3" />
 
       {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+      <View style={[styles.header, { paddingTop: insets.top }]}>
         <TouchableOpacity
           style={styles.menuBtn}
           onPress={() => setSidebarOpen(true)}
@@ -484,18 +518,16 @@ export default function Home() {
         </TouchableOpacity>
       )}
 
-      {/* Extra Lecture Picker Modal */}
-      <Modal
-        visible={extraModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setExtraModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
+      {/* Extra Lecture Picker — animated overlay, no Modal */}
+      {extraModalMounted && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          <TouchableWithoutFeedback onPress={closeExtraModal}>
+            <Animated.View style={[styles.modalBackdrop, { opacity: extraBackdropOpacity }]} />
+          </TouchableWithoutFeedback>
+          <Animated.View style={[styles.modalSheet, { transform: [{ translateY: extraSheetTranslateY }] }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Extra Lecture</Text>
-              <TouchableOpacity onPress={() => setExtraModal(false)} style={styles.modalClose}>
+              <TouchableOpacity onPress={closeExtraModal} style={styles.modalClose}>
                 <Text style={styles.modalCloseText}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -531,9 +563,9 @@ export default function Home() {
                 })}
               </ScrollView>
             )}
-          </View>
+          </Animated.View>
         </View>
-      </Modal>
+      )}
 
       <AppSidebar
         visible={sidebarOpen}
@@ -685,12 +717,15 @@ const styles = StyleSheet.create({
   extraLectureBtnText: { color: "#fff", fontSize: 14, fontWeight: "700" },
 
   // Extra lecture modal
-  modalOverlay: {
-    flex: 1,
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
   },
   modalSheet: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
