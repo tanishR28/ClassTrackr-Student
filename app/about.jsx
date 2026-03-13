@@ -142,7 +142,7 @@ export default function About() {
         {/* Footer */}
         <View style={styles.footer}>
           <Text style={styles.footerBuilt}>Built with care for students</Text>
-          <Text style={styles.footerDev}>Developed by Tanish Rane</Text>
+          <Text style={styles.footerDev}>Developed by Tanish S. Rane</Text>
         </View>
       </ScrollView>
     </View>
