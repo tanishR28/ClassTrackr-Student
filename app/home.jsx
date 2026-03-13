@@ -27,6 +27,7 @@ import {
   removeExtraLecture,
   getExtraLecturesForDate,
   setExtraLectureMark,
+  getActivePause,
 } from "../services/database";
 import {
   calculateAttendancePercentage,
@@ -56,6 +57,11 @@ function getTodayInfo() {
 const STATUS_LABEL = { present: 'Present', absent: 'Absent', skip: 'Cancelled' };
 const STATUS_COLOR = { present: '#4CAF50', absent: '#F44336', skip: '#9E9E9E' };
 
+function formatDate(dateStr) {
+  const [, mm, dd] = dateStr.split('-');
+  return `${parseInt(dd)} ${MONTH_NAMES[parseInt(mm) - 1]}`;
+}
+
 export default function Home() {
   const db = useSQLiteContext();
   const insets = useSafeAreaInsets();
@@ -67,6 +73,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [todayPaused, setTodayPaused] = useState(false);
+  const [pauseEndDate, setPauseEndDate] = useState(null);
 
   // Extra lecture picker modal
   const [extraModalMounted, setExtraModalMounted] = useState(false);
@@ -79,15 +87,19 @@ export default function Home() {
     try {
       await processPendingMarks(db, t.date);
       await initTodayMarks(db, t.short, t.date);
-      const [data, marksMap, extras] = await Promise.all([
+      const [data, marksMap, extras, pause] = await Promise.all([
         getSubjectsWithStatsForDay(db, t.short),
         getTodayMarksMap(db, t.date),
         getExtraLecturesForDate(db, t.date),
+        getActivePause(db),
       ]);
+      const paused = pause && t.date >= pause.start_date && t.date <= pause.end_date;
       setToday(t);
       setSubjects(data);
       setMarks(marksMap);
       setExtraLectures(extras);
+      setTodayPaused(!!paused);
+      setPauseEndDate(paused ? pause.end_date : null);
     } catch (e) {
       showAlert("Error", "Failed to load subjects.");
     } finally {
@@ -286,7 +298,7 @@ export default function Home() {
 
     return (
       <TouchableOpacity
-        style={[styles.card, status === 'skip' && styles.cardSkip]}
+        style={[styles.card, (status === 'skip' || todayPaused) && styles.cardSkip]}
         onPress={() =>
           router.push({
             pathname: "/subjects/[id]",
@@ -349,7 +361,7 @@ export default function Home() {
     return (
       <TouchableOpacity
         key={`extra-${item.subject_id}`}
-        style={[styles.card, styles.cardExtra, status === 'skip' && styles.cardSkip]}
+        style={[styles.card, styles.cardExtra, (status === 'skip' || todayPaused) && styles.cardSkip]}
         onPress={() =>
           router.push({
             pathname: "/subjects/[id]",
@@ -478,6 +490,20 @@ export default function Home() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Pause banner */}
+      {todayPaused && (
+        <View style={styles.pauseBanner}>
+          <Text style={styles.pauseIcon}>⏸</Text>
+          <View style={styles.pauseTextWrap}>
+            <Text style={styles.pauseTitle}>Timetable Paused</Text>
+            <Text style={styles.pauseSub}>
+              No attendance counted today
+              {pauseEndDate ? `  ·  Resumes ${formatDate(pauseEndDate)}` : ''}
+            </Text>
+          </View>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.center}>
@@ -628,6 +654,22 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   timetableBtnText: { color: "#fff", fontSize: 12, fontWeight: "600" },
+
+  // Pause banner
+  pauseBanner: {
+    backgroundColor: "#FFF8E1",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFE082",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  pauseIcon: { fontSize: 18 },
+  pauseTextWrap: { flex: 1 },
+  pauseTitle: { fontSize: 13, fontWeight: "700", color: "#E65100" },
+  pauseSub: { fontSize: 11, color: "#BF360C", marginTop: 1 },
 
   // List
   list: { padding: 16, paddingBottom: 80 },

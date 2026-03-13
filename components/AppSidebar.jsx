@@ -124,6 +124,19 @@ export default function AppSidebar({ visible, onClose }) {
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
+
+        {/* Push About to bottom */}
+        <View style={{ flex: 1 }} />
+
+        <TouchableOpacity
+          style={styles.aboutBtn}
+          onPress={() => navigate('/about')}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.aboutIcon}>ℹ️</Text>
+          <Text style={styles.aboutLabel}>About ClassTrackr</Text>
+        </TouchableOpacity>
+        <View style={{ height: insets.bottom + 12 }} />
       </Animated.View>
     </View>
   );
@@ -183,4 +196,15 @@ const styles = StyleSheet.create({
   itemLabel: { fontSize: 15, fontWeight: '600', color: '#222' },
   itemSub: { fontSize: 12, color: '#999', marginTop: 2 },
   chevron: { fontSize: 22, color: '#ddd', fontWeight: '300' },
+  aboutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  aboutIcon: { fontSize: 18 },
+  aboutLabel: { fontSize: 14, fontWeight: '600', color: '#888' },
 });
