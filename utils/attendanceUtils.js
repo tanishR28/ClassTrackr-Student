@@ -8,8 +8,8 @@ export const calculateLecturesNeeded = (present, total, targetPercentage = 75) =
   return Math.max(0, required - present);
 };
 
-export const getPercentageColor = (percentage) => {
-  if (percentage >= 75) return '#4CAF50';
-  if (percentage >= 60) return '#FF9800';
+export const getPercentageColor = (percentage, threshold = 75) => {
+  if (percentage >= threshold) return '#4CAF50';
+  if (percentage >= threshold * 0.8) return '#FF9800';
   return '#F44336';
 };
